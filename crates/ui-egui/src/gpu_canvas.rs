@@ -1371,8 +1371,15 @@ pub fn memory_budget(allowance: u64, pixels: u64, ram: Option<u64>, vram: Option
     }
     let ram = ram.unwrap_or(16 << 30);
     let charged = if vram.is_some() { 0 } else { pixels };
-    allowance.saturating_sub(charged).min(ram / 4).min(card).max(MIN_GPU_BUDGET)
+    let b = allowance.saturating_sub(charged).min(ram / 4).min(card);
+    #[cfg(target_arch = "wasm32")]
+    let b = b.min(WEB_GPU_BUDGET); //browsers hide VRAM; low-end devices run out of it
+    b.max(MIN_GPU_BUDGET)
 }
+
+/// GPU memory the compositor may plan for in the browser, where neither VRAM nor RAM is readable.
+#[cfg(target_arch = "wasm32")]
+const WEB_GPU_BUDGET: u64 = 512 << 20;
 
 /// The share of a discrete GPU's memory each of [`memory_budget`] and [`canvas_budget`] may
 /// plan for: three eighths, so the two together leave a quarter of the card to the window's

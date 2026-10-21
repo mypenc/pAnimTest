@@ -41,6 +41,7 @@ fn with_timeline(s: &mut Session, f: impl FnOnce(&mut Option<Timeline>)) -> Resu
     crate::video_cmds::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.revision += 1;
+    st.last_damage = None; //playhead moves repaint the whole canvas
     info(s)
 }
 
@@ -213,6 +214,9 @@ fn frame_edit(s: &mut Session, label: &str, op: FOp) -> Result<Value> {
         crate::video_cmds::sync(doc);
         Ok(())
     })?;
+    if let Some(st) = s.active_mut() {
+        st.last_damage = None;
+    }
     info(s)
 }
 
