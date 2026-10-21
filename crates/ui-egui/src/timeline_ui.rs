@@ -8,7 +8,33 @@ use serde_json::{Value, json};
 use crate::PhotocraftApp;
 use crate::theme::Tokens;
 
-type Cache = std::collections::HashMap<usize, (u64, egui::TextureHandle)>;
+#[derive(Clone, Default)]
+pub struct Cache(std::collections::HashMap<usize, (u64, egui::TextureHandle)>);
+
+impl std::ops::Deref for Cache {
+    type Target = std::collections::HashMap<usize, (u64, egui::TextureHandle)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Cache {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for Cache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cache({})", self.0.len())
+    }
+}
+
+impl PartialEq for Cache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
 
 fn yes() -> bool {
     true
@@ -71,8 +97,8 @@ impl Default for TimelineUi {
             onion_opacity: 0.35,
             onion_tint: true,
             tracks: true,
-            thumb_cache: Cache::new(),
-            onion_cache: Cache::new(),
+            thumb_cache: Cache::default(),
+            onion_cache: Cache::default(),
         }
     }
 }
