@@ -4,7 +4,8 @@
 
 use std::sync::Arc;
 
-use photocraft_doc::Timeline;
+use photocraft_doc::{Layer, Timeline, VideoData};
+use photocraft_raster::Surface;
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -116,6 +117,105 @@ fn set_props(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum FOp {
+    New,
+    Dup,
+    Del,
+    Move(i64),
+}
+
+fn each_video(layers: &mut [Layer], f: &mut impl FnMut(&mut VideoData)) {
+    for l in layers.iter_mut() {
+        if let Some(v) = l.video.as_mut() {
+            f(v);
+        }
+        if let Some(ch) = l.children_mut() {
+            each_video(ch, f);
+        }
+    }
+}
+
+fn has_video(layers: &[Layer]) -> bool {
+    layers.iter().any(|l| l.video.is_some() || l.children().is_some_and(has_video))
+}
+
+fn apply_op(fr: &mut Vec<Surface>, op: FOp, cur: usize, to: usize, dur: usize, fmt: photocraft_color::PixelFormat) {
+    while fr.len() < dur.max(cur + 1) {
+        fr.push(Surface::new(fmt));
+    }
+    match op {
+        FOp::New => fr.insert(cur + 1, Surface::new(fmt)),
+        FOp::Dup => {
+            let c = fr.get(cur).cloned().unwrap_or_else(|| Surface::new(fmt));
+            fr.insert(cur + 1, c);
+        }
+        FOp::Del => {
+            if fr.len() > 1 {
+                fr.remove(cur);
+            }
+        }
+        FOp::Move(_) => {
+            let f = fr.remove(cur);
+            fr.insert(to.min(fr.len()), f);
+        }
+    }
+}
+
+/// Insert/duplicate/delete/move a frame across every video layer and keep the duration in step.
+fn frame_edit(s: &mut Session, label: &str, op: FOp) -> Result<Value> {
+    let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
+    s.edit(label, |doc, active| {
+        crate::video_cmds::store(doc);
+        let t = doc.timeline.get_or_insert_with(|| Timeline::new(1, 30.0));
+        t.clamp();
+        let (dur, cur, old_end) = (t.duration, t.current, t.work_end);
+        if matches!(op, FOp::New | FOp::Dup) && dur >= MAX_DURATION {
+            return Err(EngineError::Other(format!("the timeline is limited to {MAX_DURATION} frames")));
+        }
+        if matches!(op, FOp::Del) && dur <= 1 {
+            return Err(EngineError::Other("can't delete the only frame".into()));
+        }
+        let to = match op {
+            FOp::Move(d) => (cur as i64).saturating_add(d).clamp(0, dur as i64 - 1) as usize,
+            _ => cur,
+        };
+        if matches!(op, FOp::New | FOp::Dup) && !has_video(&doc.layers) {
+            let name = doc.next_layer_name("Video Layer");
+            let mut l = Layer::raster(name, fmt);
+            l.video = Some(VideoData::new((0..dur).map(|_| Surface::new(fmt)).collect(), doc.timeline.as_ref().map_or(30.0, |t| t.fps)));
+            let id = doc.insert_above(*active, l);
+            *active = Some(id);
+        }
+        each_video(&mut doc.layers, &mut |v| {
+            apply_op(&mut v.frames, op, cur, to, dur, fmt);
+            if let Some(o) = v.original_frames.as_mut() {
+                apply_op(o, op, cur, to, dur, fmt);
+            }
+        });
+        if let Some(t) = &mut doc.timeline {
+            match op {
+                FOp::New | FOp::Dup => {
+                    t.duration = dur + 1;
+                    t.current = cur + 1;
+                }
+                FOp::Del => {
+                    t.duration = dur - 1;
+                    t.current = cur.min(dur - 2);
+                }
+                FOp::Move(_) => t.current = to,
+            }
+            if old_end >= dur {
+                t.work_end = t.duration;
+            }
+            t.clamp();
+        }
+        crate::video_cmds::sync(doc);
+        Ok(())
+    })?;
+    info(s)
+}
+
 fn info(s: &mut Session) -> Result<Value> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     Ok(match &st.doc.timeline {
@@ -140,6 +240,13 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("timeline.nextFrame", "Next Frame", "{} → {timeline}", has_timeline, |s, _| step(s, 1)),
         spec!("timeline.previousFrame", "Previous Frame", "{} → {timeline}", has_timeline, |s, _| step(s, -1)),
         spec!("timeline.setProps", "Timeline Settings", r#"{fps?, duration?, workStart?, workEnd?} → {timeline}"#, has_timeline, |s, p| set_props(s, p)),
+        spec!("timeline.newFrame", "New Frame", "{} → {timeline}", has_doc, |s, _| frame_edit(s, "New Frame", FOp::New)),
+        spec!("timeline.duplicateFrame", "Duplicate Frame", "{} → {timeline}", has_doc, |s, _| frame_edit(s, "Duplicate Frame", FOp::Dup)),
+        spec!("timeline.deleteFrame", "Delete Frame", "{} → {timeline}", has_timeline, |s, _| frame_edit(s, "Delete Frame", FOp::Del)),
+        spec!("timeline.moveFrame", "Move Frame", r#"{delta} → {timeline}"#, has_timeline, |s, p| {
+            let d = p.get("delta").and_then(Value::as_i64).ok_or_else(|| bad("timeline.moveFrame", "need integer `delta`".into()))?;
+            frame_edit(s, "Move Frame", FOp::Move(d))
+        }),
         spec!("timeline.info", "Timeline Info", "{} → {timeline}", has_doc, |s, _| info(s)),
     ]
 }
@@ -269,6 +376,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn frames_of(s: &Session) -> Vec<usize> {
+        fn walk(l: &[Layer], o: &mut Vec<usize>) {
+            for x in l {
+                if let Some(v) = &x.video {
+                    o.push(v.frames.len());
+                }
+                if let Some(c) = x.children() {
+                    walk(c, o);
+                }
+            }
+        }
+        let mut o = Vec::new();
+        walk(&s.active().unwrap().doc.layers, &mut o);
+        o
+    }
+
+    #[test]
+    fn frame_ops_span_all_video_layers() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        s.execute("timeline.create", json!({"duration": 1})).unwrap();
+        s.execute("layer.videoLayers.newBlankVideoLayer", json!({})).unwrap();
+        s.execute("layer.videoLayers.newBlankVideoLayer", json!({})).unwrap();
+        let r = s.execute("timeline.newFrame", json!({})).unwrap();
+        assert_eq!((r["timeline"]["duration"].as_u64(), r["timeline"]["current"].as_u64()), (Some(2), Some(1)));
+        s.execute("timeline.duplicateFrame", json!({})).unwrap();
+        assert_eq!(frames_of(&s), vec![3, 3]);
+        s.execute("timeline.moveFrame", json!({"delta": -2})).unwrap();
+        assert_eq!(current(&mut s), 0);
+        s.execute("timeline.deleteFrame", json!({})).unwrap();
+        assert_eq!(frames_of(&s), vec![2, 2]);
+        s.execute("timeline.deleteFrame", json!({})).unwrap();
+        assert!(s.execute("timeline.deleteFrame", json!({})).is_err());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(frames_of(&s), vec![2, 2]);
+    }
+
+    #[test]
+    fn new_frame_creates_layer_when_none() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        s.execute("timeline.newFrame", json!({})).unwrap();
+        assert_eq!(frames_of(&s), vec![2]);
     }
 
     #[test]

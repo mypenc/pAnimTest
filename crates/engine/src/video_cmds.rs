@@ -473,6 +473,27 @@ pub fn render_video_with(
         return Ok(json!({"frames": frames, "file": path}));
     }
 
+    // MJPEG AVI: one playable video file at the timeline frame rate.
+    if format.eq_ignore_ascii_case("avi") {
+        let opts = photocraft_io::ExportOptions::default();
+        let mut jpegs = Vec::with_capacity(frames);
+        for f in 0..frames {
+            let mut doc = base.clone();
+            if let Some(t) = &mut doc.timeline {
+                t.current = f;
+            }
+            sync(&mut doc);
+            jpegs.push(photocraft_io::export(&doc, "jpg", &opts).map(|r| r.bytes).map_err(|e| EngineError::Other(format!("render frame {f}: {e}")))?);
+            if !progress(f + 1, frames) {
+                return Err(cancelled());
+            }
+        }
+        let avi = crate::avi::mux(w as u32, h as u32, fps, &jpegs).map_err(EngineError::Other)?;
+        let name = format!("{stem}.avi");
+        write(&name, &avi)?;
+        return Ok(json!({"frames": frames, "file": format!("{dir}/{name}")}));
+    }
+
     // Image sequence.
     let opts = photocraft_io::ExportOptions::default();
     let mut files = Vec::new();

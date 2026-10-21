@@ -357,7 +357,9 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         "file.export.renderVideo" if params.get("dir").is_none() => {
             #[cfg(target_arch = "wasm32")]
             {
-                Err("Render Video to a local directory is unavailable on the web".into())
+                let p = if params.get("format").is_some() { params.clone() } else { json!({"format": "avi"}) };
+                let write = app.services.write.as_mut().ok_or("no download service")?;
+                photocraft_engine::render_video_with(&app.session, &p, |n, b| write(n, b).map_err(photocraft_engine::EngineError::Other), |_, _| true).map_err(|e| e.to_string())
             }
             #[cfg(not(target_arch = "wasm32"))]
             {

@@ -1,0 +1,22 @@
+name: Anim check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Engine tests
+        run: cargo test -p photocraft-engine --lib -- timeline_cmds avi
+      - name: UI crate tests
+        run: cargo test -p photocraft-ui-egui --lib
+      - name: Web build check
+        run: cargo check -p photocraft-web --target wasm32-unknown-unknown
