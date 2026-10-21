@@ -220,6 +220,47 @@ fn frame_edit(s: &mut Session, label: &str, op: FOp) -> Result<Value> {
     info(s)
 }
 
+fn key_layers(h: &mut impl std::hash::Hasher, layers: &[Layer], frame: usize, cur: usize) {
+    use std::hash::Hash;
+    for l in layers {
+        (l.id.0, l.visible, l.opacity.to_bits(), l.fill_opacity.to_bits()).hash(h);
+        if let photocraft_doc::LayerContent::Raster(sf) = &l.content {
+            let sf = match &l.video {
+                Some(v) if frame != cur => v.frames.get(frame).unwrap_or(sf),
+                _ => sf,
+            };
+            sf.tile_count().hash(h);
+            for (_, t) in sf.tiles() {
+                (std::sync::Arc::as_ptr(t) as usize).hash(h);
+            }
+        }
+        if let Some(ch) = l.children() {
+            key_layers(h, ch, frame, cur);
+        }
+    }
+}
+
+/// A cheap fingerprint of what frame `frame` looks like; equal keys mean the same thumbnail.
+pub fn frame_key(s: &Session, frame: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Some(st) = s.active() else { return 0 };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    st.doc.id.0.hash(&mut h);
+    key_layers(&mut h, &st.doc.layers, frame, st.doc.timeline.as_ref().map_or(0, |t| t.current));
+    h.finish()
+}
+
+/// The composite of frame `frame` reduced to `w`×`h`, for thumbnails and onion skins.
+pub fn frame_preview(s: &Session, frame: usize, w: u32, h: u32) -> Option<photocraft_compose::Buffer> {
+    let st = s.active()?;
+    let mut d = (*st.doc).clone();
+    crate::video_cmds::store(&mut d);
+    let t = d.timeline.as_mut()?;
+    t.current = frame.min(t.duration.saturating_sub(1));
+    crate::video_cmds::sync(&mut d);
+    Some(photocraft_compose::render_reduced(&d, w.max(1), h.max(1)))
+}
+
 fn info(s: &mut Session) -> Result<Value> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     Ok(match &st.doc.timeline {

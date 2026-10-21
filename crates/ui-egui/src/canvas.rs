@@ -1048,7 +1048,7 @@ fn checker(app: &mut PhotocraftApp, ctx: &egui::Context) -> egui::TextureId {
         .id()
 }
 
-fn buffer_to_image(buf: &photocraft_compose::Buffer) -> egui::ColorImage {
+pub(crate) fn buffer_to_image(buf: &photocraft_compose::Buffer) -> egui::ColorImage {
     // `buf.to_rgba8()` then `color_image`, fused: one parallel pass, no intermediate image.
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     let mut pixels = vec![egui::Color32::TRANSPARENT; buf.px.len()];
@@ -3958,6 +3958,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // The transform preview is image content: it goes under the grid and guides, which
         // stay visible across a layer being transformed (#5086); the box is drawn later.
         crate::transform_tool::draw_content(app, &painter, &xf);
+        crate::timeline_ui::draw_onion(app, &painter, &xf);
         if app.ui.extras.grid && app.ui.view.extras {
             crate::rulers::draw_grid(app, &painter, &xf, &doc);
         }
